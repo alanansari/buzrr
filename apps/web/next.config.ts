@@ -1,25 +1,9 @@
 import type { NextConfig } from "next";
-import path from "path";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
-
-const withBundleAnalyzer = (() => {
-  try {
-    const bundleAnalyzer = require("@next/bundle-analyzer");
-    return bundleAnalyzer({
-      enabled: process.env.ANALYZE === "true",
-    });
-  } catch {
-    return (config: NextConfig) => config;
-  }
-})();
+import { fileURLToPath } from "url";
 
 const nextConfig: NextConfig = {
-  // Required for Vercel: standalone output includes only needed deps (reduces deploy size/failures).
   output: "standalone",
-  // Monorepo: trace server deps from repo root so Prisma and workspace packages resolve.
-  outputFileTracingRoot: path.join(__dirname, "../../"),
+  outputFileTracingRoot: fileURLToPath(new URL("../../", import.meta.url)),
   outputFileTracingExcludes: {
     "*": [
       "**/__tests__/**",
@@ -30,7 +14,13 @@ const nextConfig: NextConfig = {
       "**/*.log",
     ],
   },
-  serverExternalPackages: ["@prisma/client", "@prisma/adapter-pg", "pg"],
+  serverExternalPackages: [
+    "@prisma/client",
+    "@prisma/adapter-pg",
+    "pg",
+    "better-auth",
+    "kysely",
+  ],
   transpilePackages: ["@buzrr/prisma"],
   images: {
     remotePatterns: [
@@ -42,4 +32,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withBundleAnalyzer(nextConfig);
+export default nextConfig;

@@ -6,15 +6,17 @@
     "dev": "turbo run dev",
     "dev:web": "turbo run dev --filter=web",
     "dev:server": "turbo run dev --filter=server",
-    "lint": "turbo run lint",
+    "lint": "turbo run lint --filter=web",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,md}\"",
-    "check-types": "turbo run check-types",
-    "prisma:generate": "prisma generate"
+    "check-types": "tsc -b --noEmit && yarn workspace web check-types",
+    "prisma:generate": "prisma generate",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "dotenv": "^17.3.1",
+    "husky": "^9.1.7",
     "prettier": "^3.5.3",
     "prisma": "^7.4.0",
     "turbo": "^2.9.4",

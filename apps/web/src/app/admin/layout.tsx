@@ -1,10 +1,13 @@
+export const dynamic = "force-dynamic";
+
 import SessionProvider from "@/components/SessionProvider";
 import { redirect } from "next/navigation";
 import ClientImage from "@/components/ClientImage";
 import ToastViewport from "@/components/ToastViewport";
 import type { Metadata } from "next";
 
-import { auth } from "@/utils/auth";
+import { auth } from "@/lib/auth";
+import { headers } from "next/headers";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -16,9 +19,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const session = await auth();
-  if (!session || !session.user) {
-    redirect("/api/auth/signin");
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user) {
+    redirect("/auth/login");
   }
   return (
     <SessionProvider>
