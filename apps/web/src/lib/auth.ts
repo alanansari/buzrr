@@ -3,46 +3,40 @@ import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { prisma } from "@buzrr/prisma";
 
-function createAuth() {
-  const googleClientId = process.env.GOOGLE_CLIENT_ID;
-  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+type Auth = ReturnType<typeof betterAuth>;
 
-  if (!googleClientId || !googleClientSecret) {
+let _auth: Auth | undefined;
+
+function getAuth(): Auth {
+  if (_auth) return _auth;
+
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     throw new Error(
       "Missing required Google OAuth credentials: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set",
     );
   }
 
-  return betterAuth({
-    database: prismaAdapter(prisma, {
-      provider: "postgresql",
-    }),
+  _auth = betterAuth({
+    database: prismaAdapter(prisma, { provider: "postgresql" }),
     socialProviders: {
       google: {
-        clientId: googleClientId,
-        clientSecret: googleClientSecret,
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       },
     },
     session: {
-      cookieCache: {
-        enabled: true,
-        maxAge: 5 * 60,
-      },
+      cookieCache: { enabled: true, maxAge: 5 * 60 },
     },
-  });
-}
+  }) as unknown as Auth;
 
-type Auth = ReturnType<typeof createAuth>;
-
-let _auth: Auth | undefined;
-
-function getAuth(): Auth {
-  if (!_auth) _auth = createAuth();
-  return _auth;
+  return _auth!;
 }
 
 export const auth = new Proxy({} as Auth, {
   get(_target, prop) {
     return getAuth()[prop as keyof Auth];
+  },
+  has(_target, prop) {
+    return prop in getAuth();
   },
 });
