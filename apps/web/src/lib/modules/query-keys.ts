@@ -16,4 +16,11 @@ export const queryKeys = {
     playerPlay: (playerId: string) =>
       ["gameSessions", "playerPlay", playerId] as const,
   },
+  moderation: {
+    queue: ["moderation", "queue"] as const,
+  },
+  admins: {
+    lists: ["admins", "list"] as const,
+    list: (search: string) => ["admins", "list", search] as const,
+  },
 };
