@@ -207,7 +207,9 @@ export class GameStoreService {
   }
 
   /** playerId → score, descending. */
-  async leaderboard(code: string): Promise<{ playerId: string; score: number }[]> {
+  async leaderboard(
+    code: string,
+  ): Promise<{ playerId: string; score: number }[]> {
     const flat = await this.redis.zrevrange(keys.lb(code), 0, -1, "WITHSCORES");
     const out: { playerId: string; score: number }[] = [];
     for (let i = 0; i < flat.length; i += 2) {
@@ -250,6 +252,20 @@ export class GameStoreService {
     await this.redis.zrem(keys.deadlines(), code);
   }
 
+  /**
+   * Keeps the game visible to the sweeper (host-abandon checks) through
+   * host-paced phases that have no auto-advance deadline. The far-future
+   * score only comes due at the TTL horizon, by which time the meta has
+   * expired and handleDeadline clears the entry.
+   */
+  async parkDeadline(code: string): Promise<void> {
+    await this.redis.zadd(
+      keys.deadlines(),
+      Date.now() + TTL_SECONDS * 1000,
+      code,
+    );
+  }
+
   async allDeadlines(): Promise<{ code: string; atMs: number }[]> {
     const flat = await this.redis.zrange(keys.deadlines(), 0, -1, "WITHSCORES");
     const out: { code: string; atMs: number }[] = [];
@@ -257,10 +273,6 @@ export class GameStoreService {
       out.push({ code: flat[i], atMs: Number(flat[i + 1]) });
     }
     return out;
-  }
-
-  async dueDeadlines(nowMs: number): Promise<string[]> {
-    return this.redis.zrangebyscore(keys.deadlines(), 0, nowMs);
   }
 
   // -- ownership ---------------------------------------------------------------
