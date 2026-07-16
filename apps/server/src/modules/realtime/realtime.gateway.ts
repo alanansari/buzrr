@@ -195,7 +195,9 @@ export class RealtimeGateway
     if (data?.duelUserId) {
       await this.matchmaking
         .dequeue(data.duelUserId)
-        .catch((err) => this.logger.error("Error dequeuing on disconnect", err));
+        .catch((err) =>
+          this.logger.error("Error dequeuing on disconnect", err),
+        );
       return;
     }
     if (!data?.gameCode) return;
@@ -221,10 +223,13 @@ export class RealtimeGateway
           p.id,
           socket.data.gameSessionId,
         );
-        await this.engine.removePlayer(gameCode, p.id);
         if (removed) {
+          await this.engine.kickPlayer(gameCode, p);
           this.logger.log(`Player ${p.id} removed from ${gameCode}`);
-          this.server.to(gameCode).emit("player-removed", p);
+        } else {
+          // Already detached in Postgres (e.g. a partially-failed earlier
+          // kick) — still clear any stale Redis roster entry, quietly.
+          await this.engine.removePlayer(gameCode, p.id);
         }
       } catch (error) {
         this.logger.error("Error removing player:", error);

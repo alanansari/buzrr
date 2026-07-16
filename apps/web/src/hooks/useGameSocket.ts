@@ -21,6 +21,8 @@ export interface UseGameSocketOptions {
   gameCode: string;
   /** Player/account JWT; admins can also authenticate via session cookie. */
   token?: string;
+  /** Defer connecting until credentials are resolved (default true). */
+  ready?: boolean;
   /** Called once per socket instance, to attach role-specific listeners. */
   bind?: (socket: GameSocket) => void;
 }
@@ -35,15 +37,19 @@ export function useGameSocket({
   userType,
   gameCode,
   token,
+  ready = true,
   bind,
 }: UseGameSocketOptions): { socket: GameSocket | null } {
   const dispatch = useAppDispatch();
   const [socket, setSocket] = useState<GameSocket | null>(null);
   const bindRef = useRef(bind);
-  bindRef.current = bind;
+  useEffect(() => {
+    bindRef.current = bind;
+  }, [bind]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!ready) return;
     if ((userType === "player" || userType === "duel") && !token) return;
 
     const conn: GameSocket = io(
@@ -63,14 +69,25 @@ export function useGameSocket({
       // for proxies that drop the initial burst.
       conn.emit("request-sync");
     });
-    conn.on("disconnect", () => {
-      dispatch(setConnection("reconnecting"));
+    conn.on("disconnect", (reason) => {
+      // "io server disconnect" means the server refused this socket (auth or
+      // validation failure) — the client will NOT retry on its own, so show a
+      // hard "disconnected" instead of a perpetual "reconnecting".
+      dispatch(
+        setConnection(
+          reason === "io server disconnect" ? "disconnected" : "reconnecting",
+        ),
+      );
     });
-    conn.io.on("reconnect_failed", () => {
+    // The Manager (conn.io) is shared across sockets for the same URL, so
+    // this handler must be removed explicitly on cleanup.
+    const onReconnectFailed = () => {
       dispatch(setConnection("disconnected"));
-    });
+    };
+    conn.io.on("reconnect_failed", onReconnectFailed);
     conn.on("connect_error", () => {
-      dispatch(setConnection("disconnected"));
+      // The manager keeps retrying with backoff, so this is transient.
+      dispatch(setConnection("reconnecting"));
     });
 
     conn.on("state-sync", (payload) => dispatch(applySync(payload)));
@@ -92,11 +109,12 @@ export function useGameSocket({
     setSocket(conn);
 
     return () => {
+      conn.io.off("reconnect_failed", onReconnectFailed);
       conn.disconnect();
       setSocket(null);
       dispatch(resetGame());
     };
-  }, [dispatch, userType, gameCode, token]);
+  }, [dispatch, userType, gameCode, token, ready]);
 
   return { socket };
 }
