@@ -7,6 +7,7 @@ import type { PlayerPayload } from "@/types/socket-events";
 import { useAdminSocket } from "@/hooks/useAdminSocket";
 import ConnectionBanner from "@/components/ConnectionBanner";
 import ConnectionStatusPill from "@/components/ConnectionStatusPill";
+import EndQuizButton from "@/components/Admin/EndQuizButton";
 import WaitScreen from "./WaitScreen";
 import QuestionScreen from "./QuestionScreen";
 import QuesResult from "./QuesResult";
@@ -49,31 +50,35 @@ const GameLobby = (params: {
     gameCode: params.gameCode,
   });
 
-  if (!socket) {
-    return null;
-  }
+  // The final leaderboard shows for both phases, but a classic game only
+  // persists its GameResult when endGame runs. At "final" that hasn't happened
+  // yet, so the button must still end (and save); only "ended" is a plain exit.
+  const showLeaderboard = phase === "final" || phase === "ended";
+  const alreadyEnded = phase === "ended";
 
   return (
     <>
-      <ConnectionBanner />
-      <ConnectionStatusPill className="fixed left-3 bottom-3 z-40" />
-      {phase === "question" ? (
-        <QuestionScreen
-          socket={socket}
-          gameCode={params.gameCode}
-          quizTitle={params.quizQuestions?.title}
-        />
-      ) : phase === "reveal" ? (
-        <QuesResult socket={socket} />
-      ) : phase === "final" || phase === "ended" ? (
-        <LeaderBoard
-          socket={socket}
-          gameCode={params.gameCode}
-          quizQuestions={params.quizQuestions}
-        />
-      ) : (
-        // idle / lobby / starting — the pre-question countdown screen
-        <WaitScreen />
+      {/* Always available to the host, on every in-game phase. */}
+      <EndQuizButton roomId={params.roomId} alreadyEnded={alreadyEnded} />
+      {socket && (
+        <>
+          <ConnectionBanner />
+          <ConnectionStatusPill className="fixed left-3 bottom-3 z-40" />
+          {phase === "question" ? (
+            <QuestionScreen
+              socket={socket}
+              gameCode={params.gameCode}
+              quizTitle={params.quizQuestions?.title}
+            />
+          ) : phase === "reveal" ? (
+            <QuesResult socket={socket} />
+          ) : showLeaderboard ? (
+            <LeaderBoard />
+          ) : (
+            // idle / lobby / starting — the pre-question countdown screen
+            <WaitScreen />
+          )}
+        </>
       )}
     </>
   );
