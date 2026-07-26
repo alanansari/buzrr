@@ -40,6 +40,11 @@ export class GameSessionsService {
     if (!player) {
       throw new NotFoundException("Player not found");
     }
+    if (await this.engine.isBanned(game.gameCode, playerId)) {
+      throw new ForbiddenException(
+        "The host has banned you from this room. You can still join other rooms.",
+      );
+    }
     // Serializable so concurrent joins can't both pass the count and
     // overshoot the cap.
     await this.prisma.db.$transaction(
@@ -207,12 +212,62 @@ export class GameSessionsService {
     return { ended: true };
   }
 
-  /** Host kicks a player over HTTP — works even when the host's socket is down. */
+  /**
+   * Host kicks a player over HTTP — works even when the host's socket is down.
+   * The player keeps their identity: only the room membership is dropped, so
+   * their client lands back on the room-code screen and can join elsewhere.
+   */
   async removePlayerFromRoom(
     user: AuthUser,
     roomId: string,
     playerId: string,
   ): Promise<{ removed: true }> {
+    const { room, player } = await this.authorizeRoomPlayer(
+      user,
+      roomId,
+      playerId,
+    );
+    await this.detachPlayer(roomId, player);
+    await this.engine.kickPlayer(room.gameCode, {
+      id: player.id,
+      name: player.name,
+      profilePic: player.profilePic,
+    });
+    return { removed: true };
+  }
+
+  /**
+   * Host bans a player over HTTP: same removal as a kick, plus a room-scoped
+   * ban that blocks any rejoin (HTTP join and socket connect) for as long as
+   * this room lives.
+   */
+  async banPlayerFromRoom(
+    user: AuthUser,
+    roomId: string,
+    playerId: string,
+  ): Promise<{ banned: true }> {
+    const { room, player } = await this.authorizeRoomPlayer(
+      user,
+      roomId,
+      playerId,
+    );
+    // Record the ban before releasing the room membership: between the two,
+    // `join` would otherwise still see an unbanned player and let them back in.
+    await this.engine.banPlayer(room.gameCode, {
+      id: player.id,
+      name: player.name,
+      profilePic: player.profilePic,
+    });
+    await this.detachPlayer(roomId, player);
+    return { banned: true };
+  }
+
+  /** Shared host-authorization behind kick and ban. */
+  private async authorizeRoomPlayer(
+    user: AuthUser,
+    roomId: string,
+    playerId: string,
+  ) {
     const room = await this.prisma.db.gameSession.findUnique({
       where: { id: roomId },
     });
@@ -233,18 +288,19 @@ export class GameSessionsService {
       throw new NotFoundException("Player is not in this room");
     }
 
-    if (player.gameId === roomId) {
-      await this.prisma.db.player.update({
-        where: { id: playerId },
-        data: { gameId: null },
-      });
-    }
-    await this.engine.kickPlayer(room.gameCode, {
-      id: player.id,
-      name: player.name,
-      profilePic: player.profilePic,
+    return { room, player };
+  }
+
+  /** Drops the room membership. The player row itself is never deleted. */
+  private async detachPlayer(
+    roomId: string,
+    player: { id: string; gameId: string | null },
+  ): Promise<void> {
+    if (player.gameId !== roomId) return;
+    await this.prisma.db.player.update({
+      where: { id: player.id },
+      data: { gameId: null },
     });
-    return { removed: true };
   }
 
   async getAdminLobby(user: AuthUser, roomId: string) {
