@@ -7,11 +7,18 @@ import {
   WebSocketServer,
 } from "@nestjs/websockets";
 import { parseCorsOrigin } from "../../common/utils/parse-cors-origin";
+import { DuelInviteService } from "../duel/duel-invite.service";
 import { MatchmakingService } from "../duel/matchmaking.service";
 import { GameEngineService } from "../game-engine/game-engine.service";
 import { GameStoreService } from "../game-engine/game-store.service";
 import { RealtimeService } from "./realtime.service";
-import type { TypedServer, TypedSocket } from "./realtime.types";
+import type {
+  DuelInviteAcceptAck,
+  TypedServer,
+  TypedSocket,
+} from "./realtime.types";
+
+type DuelInviteAck = (result: DuelInviteAcceptAck) => void;
 
 @WebSocketGateway({
   cors: {
@@ -33,29 +40,49 @@ export class RealtimeGateway
     private readonly engine: GameEngineService,
     private readonly store: GameStoreService,
     private readonly matchmaking: MatchmakingService,
+    private readonly invites: DuelInviteService,
   ) {}
 
   afterInit(server: TypedServer): void {
     this.engine.setServer(server);
     this.matchmaking.setServer(server);
+    this.invites.setServer(server);
   }
 
   async handleConnection(socket: TypedSocket): Promise<void> {
     this.logger.log(`New connection: ${socket.id}`);
+
+    // socket.io drops events with no listener, and validateConnection below
+    // costs a DB round trip — so buffer accepts that beat it, or a guest who
+    // clicks Accept the instant the page connects never gets an ack.
+    const buffered: DuelInviteAck[] = [];
+    const bufferAccept = (_payload: { code: string }, ack: DuelInviteAck) =>
+      buffered.push(ack);
+    socket.on("duel:invite-accept", bufferAccept);
 
     try {
       const result = await this.realtimeService.validateConnection(socket);
 
       if (!result.valid) {
         this.logger.log(`${result.reason} — Disconnecting: ${socket.id}`);
+        buffered.forEach((ack) => ack({ ok: false, reason: "error" }));
         socket.disconnect();
         return;
       }
 
       if (result.userType === "duel") {
-        await this.handleDuelConnection(socket, result.user, result.gameCode);
+        await this.handleDuelConnection(
+          socket,
+          result.user,
+          result.gameCode,
+          result.intent,
+          { buffered, bufferAccept },
+        );
         return;
       }
+
+      socket.off("duel:invite-accept", bufferAccept);
+      buffered.forEach((ack) => ack({ ok: false, reason: "error" }));
 
       const { gameCode, gameSessionId, isRoomHost, player, userType } = result;
 
@@ -106,8 +133,10 @@ export class RealtimeGateway
   }
 
   /**
-   * Duel connections come in two flavors: queue (no gameCode — the player is
-   * waiting for a match) and game (the Redis-only duel room).
+   * Duel connections come in three flavors: queue (no gameCode — the player is
+   * waiting for an ELO match), invite (a friend-challenge waiting room, where
+   * the gameCode is a reserved invite code with no live game behind it yet),
+   * and game (the Redis-only duel room).
    */
   private async handleDuelConnection(
     socket: TypedSocket,
@@ -118,8 +147,66 @@ export class RealtimeGateway
       eloRating: number;
     },
     gameCode: string,
+    intent: "queue" | "invite",
+    earlyAccepts: {
+      buffered: DuelInviteAck[];
+      bufferAccept: (payload: { code: string }, ack: DuelInviteAck) => void;
+    },
   ): Promise<void> {
     await socket.join(`player:${user.id}`);
+    socket.off("duel:invite-accept", earlyAccepts.bufferAccept);
+
+    if (intent === "invite") {
+      // Must not fall through to the queue branch below, which would silently
+      // drop a codeless invite connection into *ranked* matchmaking.
+      if (!gameCode) {
+        this.logger.log(
+          `Invite connection without a code from ${user.id} — disconnecting`,
+        );
+        earlyAccepts.buffered.forEach((ack) =>
+          ack({ ok: false, reason: "not-found" }),
+        );
+        socket.disconnect();
+        return;
+      }
+
+      // No live room exists yet, so skip the roster gate, engine and snapshot.
+      // `playerId` null and `duelUserId` unset keep handleDisconnect a no-op:
+      // the invite outlives the socket (reload, remount, backgrounding), and
+      // staleness is caught by the presence check at accept time instead.
+      socket.data = {
+        gameCode,
+        gameSessionId: "",
+        isRoomHost: false,
+        playerId: null,
+        duelInviteCode: gameCode,
+      };
+      this.logger.log(`Duel invite connection: ${user.id} on ${gameCode}`);
+
+      // The handshake code wins over the payload — it's what host presence is
+      // keyed on, so any other code would check a room this socket isn't in.
+      const acceptInvite = (ack: DuelInviteAck) => {
+        void this.invites
+          .accept(gameCode, {
+            id: user.id,
+            name: user.name ?? "Player",
+            image: user.image,
+            elo: user.eloRating,
+          })
+          .then(ack)
+          .catch((error) => {
+            this.logger.error("Error accepting duel invite:", error);
+            ack({ ok: false, reason: "error" });
+          });
+      };
+
+      socket.on("duel:invite-accept", (_payload, ack) => acceptInvite(ack));
+      earlyAccepts.buffered.forEach(acceptInvite);
+      return;
+    }
+
+    // Queue and game connections never accept invites.
+    earlyAccepts.buffered.forEach((ack) => ack({ ok: false, reason: "error" }));
 
     if (!gameCode) {
       socket.data = {
