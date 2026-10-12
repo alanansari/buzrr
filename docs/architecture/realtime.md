@@ -39,10 +39,13 @@ lobby → starting → question ⇄ reveal → final → ended
   the orderings below (window before broadcast, personal results before the
   reveal) are encoded as effect order and asserted in `machine.spec.ts`.
   `endGame` (the claim + persistence) stays in the shell.
-- Each event loads only the state parts it needs (`PARTS_FOR`, one pipelined
-  round trip after the meta via `store.loadState`). The per-answer
-  `answer-recorded` event loads roster + answers only; the early close is a
-  follow-up `close-question` event (a `dispatch` effect) with a full load.
+- Each event loads only the state parts it needs (`PARTS_FOR`, via
+  `store.loadState`: one pipelined round trip after the meta when the current
+  question's answers are needed, otherwise one round trip with the meta in
+  it). The per-answer `answer-recorded` event is stepped on the state
+  `submitAnswer` already read, with the answered ids carried in the event; the
+  early close is a follow-up `close-question` event (a `dispatch` effect)
+  with a full load.
 
 ### Pacing
 
@@ -154,12 +157,21 @@ quitter finish on score instead of forfeiting.
    1000 → 100 linearly over the question's `timeOut`; wrong = 0. Steps 1–4
    are the pure `judgeAnswer` (`core/answers.ts`); the gateway first checks
    the payload shape against the contract's `submitAnswerSchema`.
-5. First write wins via `HSETNX` (`store.putAnswer`); duplicates rejected.
-6. Score added to the Redis leaderboard zset; the shell dispatches
-   `answer-recorded`, whose step first broadcasts `answer-count` (`{ index, answered }`, total answers so
+5. First write wins: `store.recordAnswer` is one Lua script that does the
+   `HSETNX`, adds the score to the leaderboard zset only if the answer was
+   stored, and returns every answered id (`HKEYS`); duplicates are rejected.
+6. The shell steps `answer-recorded` (with those ids) on the state it read
+   for judging, whose step first broadcasts `answer-count` (`{ index, answered }`, total answers so
    far) — the host's "answers in" meter; question-phase `state-sync` carries
    the same number as `answeredCount` for reconnects — then, if every
    connected player has answered, closes the question early.
+
+**Cost per answer** (the hot path, once per player per question): one
+pipelined read (`HGETALL` meta, `GET` questions, `HGETALL` players), one
+`EVAL`, and one `PUBLISH` for `answer-count` — 5 commands, measured on a real
+Redis by `game-engine/__tests__/answer-cost.spec.ts`. It was 10 + 1 `PUBLISH`
+(and 4 `MULTI`/`EXEC`) before the read was shared and the writes merged. If
+you add a Redis call here, update that spec's expected list on purpose.
 
 **Window stamping.** Opening a question (`openQuestion` in the core) writes the `games:deadlines` entry, then
 opens the phase in one meta write carrying `qStartAt = now`,
@@ -185,6 +197,18 @@ masked until the reveal (`buildSnapshot`).
   **almost no client bookkeeping** — the whole screen re-renders from the
   snapshot (`apps/web/src/hooks/useGameSocket.ts` → `applySync` in
   `apps/web/src/state/game/gameSlice.ts`).
+- **A snapshot can be older than events already received.** It is read from
+  Redis and sent once the read finishes, so a phase change in between (for
+  example the host's next `question-start`) reaches the client first.
+  `applySync` drops any snapshot that is behind the client's current point in
+  the game (`gameProgress`; phases only move forward within a game). Without
+  that check, a stale reveal snapshot left players on the result screen after
+  the game had moved on. A new socket resets the slice to `idle`, so the
+  first snapshot on a reconnect is always applied.
+- A page coming back to the foreground emits `request-sync`
+  (`resyncOnReturn`). A suspended mobile tab can still look connected after
+  the server dropped it, and would otherwise miss every event until the
+  client noticed the connection was dead.
 - The one exception is an **answer in flight when the socket dropped**: its ack
   never fires (socket.io discards pending acks on close) and the buffered emit
   is dropped server-side if it lands before the gateway registers handlers. So
@@ -272,9 +296,25 @@ information, it does.
    `remove-player`); players get `submit-answer` (with ack) and `leave-room`.
 5. Snapshot is sent immediately.
 
-Disconnect: hosts flip `hostConnected` meta; players get marked disconnected
-and a grace timer starts (60s lobby removal, or 30s duel forfeit via
-`resolveDuelForfeit`); duel-queue sockets are dequeued.
+Disconnect: hosts flip `hostConnected` meta (`hostDisconnected`); players get
+marked disconnected and a grace timer starts (60s lobby removal, or 30s duel
+forfeit via `resolveDuelForfeit`); duel-queue sockets are dequeued.
+
+**Presence is per person, not per socket**, so a closing socket only marks its
+owner gone if they have no other socket in the game. A client that reconnects
+gets a new socket while the server still holds the old one until the ping
+timeout (`pingInterval` + `pingTimeout`, 10s + 10s on the gateway). Before the
+check, the old socket closing marked a player who was still connected as gone.
+The early close then ended the next question as soon as everyone else had
+answered, and a host could be marked gone and caught by the abandon sweep.
+`playerDisconnected` / `hostDisconnected` look for a remaining socket with
+`fetchSockets()` (cluster-wide via the Redis adapter) in `player:{id}` /
+`host:{gameCode}`. They match on `socket.data` (this game, this player or the
+host), because `player:{userId}` also holds a duel user's queue and invite
+sockets. Each one checks, writes, then checks again, so a reconnect that lands
+mid-write can't be overwritten. If the lookup fails, the person is treated as
+gone (the previous behaviour). Covered by
+`game-engine/__tests__/presence.spec.ts`.
 
 ## Kick / ban semantics
 

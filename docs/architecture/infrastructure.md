@@ -37,7 +37,10 @@
   `KEYS game:*`, `HGETALL game:<CODE>:meta`,
   `ZRANGE games:deadlines 0 -1 WITHSCORES`, `ZRANGE mm:duel:queue 0 -1 WITHSCORES`.
 - **Engine rules without a browser**: `yarn workspace server test` runs the
-  pure core's specs (`game-engine/core/__tests__`, no Redis needed).
+  pure core's specs (`game-engine/core/__tests__`, no Redis needed). The
+  real-Redis answer-cost spec runs only with `REDIS_TEST_URL` set (it uses DB
+  15), e.g. `docker run -d --rm -p 6390:6379 redis:7-alpine` and
+  `REDIS_TEST_URL=redis://localhost:6390 yarn workspace server test`.
 - **Single app**: `yarn dev:server` / `yarn dev:web`. Server logs are Nest
   `Logger` lines on stdout (game/duel events log by gameCode).
 
@@ -175,7 +178,8 @@ One workflow, four jobs, on every push/PR to `main`:
    `yarn check-types` (root tsc -b for contract+server+prisma, then web
    tsc); `yarn workspace server test` (vitest: billing specs against the
    Postgres service, plus the pure engine core, question-type, storage and
-   LLM specs); `yarn build` (everything, via turbo).
+   LLM specs); `yarn workspace web test` (vitest: the live-game slice);
+   `yarn build` (everything, via turbo).
 2. **verify-docker-setup** — proves the contributor onboarding path:
    `docker compose up -d postgres redis`, wait for health, `db push`,
    teardown.
@@ -188,9 +192,15 @@ One workflow, four jobs, on every push/PR to `main`:
    migrations apply from scratch), then `pytest`.
 
 Notes: read-only token, concurrency-cancel superseded runs. For `apps/web`,
-"CI green" still means lint+types+build only. In `apps/server` the engine's
-pure core is unit-tested, but its shell (`GameEngineService`, the Lua
-scripts in `GameStoreService`, ELO persistence) has no automated tests. Husky pre-commit runs
+"CI green" means lint+types+build plus `yarn workspace web test` (the
+live-game slice and `resyncOnReturn`); components and pages have no tests. In
+`apps/server` the engine's pure core is unit-tested, and parts of its shell
+are too: `GameEngineService` presence handling (`presence.spec.ts`, against
+fakes) and the per-answer Redis path, including `recordAnswer`'s Lua script
+(`answer-cost.spec.ts`, real Redis, opt-in via `REDIS_TEST_URL`, which CI
+sets). Still untested: the shell's timers, recovery and ELO persistence, and
+the other Lua scripts in `GameStoreService` (meta init, owner renewal,
+player registration, pause/resume/end claims). Husky pre-commit runs
 lint-staged + lint + typecheck locally.
 
 ## External services (integration points)
