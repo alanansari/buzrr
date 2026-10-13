@@ -1,6 +1,6 @@
 # Frontend (Next.js web app)
 
-`apps/web` — Next.js 15 (App Router) + React 19, Tailwind v4 (+ some MUI,
+`apps/web` — Next.js 16 (App Router) + React 19, Tailwind v4 (+ some MUI,
 mainly `@mui/x-charts`), Redux Toolkit + redux-persist, TanStack React Query,
 socket.io-client. Default toolchain is the Next CLI; a parallel vinext/Vite
 setup exists (see [infrastructure.md](infrastructure.md#vinext)).
@@ -208,7 +208,10 @@ the Prisma runtime out of the client bundle).
   exact http origin of `NEXT_PUBLIC_API_URL` / `MEDIA_ORIGIN` (self-hosted
   local uploads); `NEXT_IMAGE_UNOPTIMIZED=1` bypasses the optimizer (the
   Docker build sets it — inside the container the API's public URL isn't
-  reachable).
+  reachable). `NEXT_IMAGE_ALLOW_LOCAL_IP=1` is the explicit opt-in for the
+  optimizer to fetch private/loopback IPs; while on, `remotePatterns` is only
+  those self-hosted origins (no https wildcard), so it can't be used as an
+  SSRF path to internal hosts.
 - `/auth/login` is `force-dynamic`: it reads the enabled sign-in methods
   (`lib/auth-methods.ts` — Google when its credentials are set, email +
   password with `AUTH_EMAIL_PASSWORD=ON`) from runtime env, so one image
